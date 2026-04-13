@@ -9,7 +9,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from config import ASHBY_COMPANIES, LOOKBACK_HOURS, JOB_TITLES, SEARCH_KEYWORDS
+import settings_db
+from config import LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import fetch_soup, make_job_id
 
@@ -20,7 +21,7 @@ BOARD_BASE = "https://jobs.ashbyhq.com/{company}"
 
 def _matches_title(title: str) -> bool:
     t = title.lower()
-    return any(kw.lower() in t for kw in JOB_TITLES + SEARCH_KEYWORDS)
+    return any(kw.lower() in t for kw in settings_db.job_titles())
 
 
 def _parse_ashby_date(date_str: Optional[str]) -> Optional[datetime]:
@@ -150,7 +151,7 @@ def scrape_company(company_name: str, identifier: str) -> List[Job]:
 
 def scrape_all() -> List[Job]:
     all_jobs: List[Job] = []
-    for company_name, identifier in ASHBY_COMPANIES.items():
+    for company_name, identifier in settings_db.ashby_companies().items():
         try:
             all_jobs.extend(scrape_company(company_name, identifier))
         except Exception as exc:

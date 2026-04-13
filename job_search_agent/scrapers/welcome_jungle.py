@@ -10,7 +10,8 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from urllib.parse import quote
 
-from config import SEARCH_KEYWORDS, JOB_TITLES, LOOKBACK_HOURS
+import settings_db
+from config import LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import fetch_json, fetch_soup, make_job_id
 
@@ -121,7 +122,7 @@ def _algolia_to_jobs(data: dict, keyword: str) -> List[Job]:
 
     for hit in hits:
         title = hit.get("name", "")
-        if not any(jt.lower() in title.lower() for jt in JOB_TITLES):
+        if not any(jt.lower() in title.lower() for jt in settings_db.job_titles()):
             continue
 
         company_info = hit.get("company", {}) or {}
@@ -178,7 +179,7 @@ def scrape_all() -> List[Job]:
     all_jobs: List[Job] = []
     seen_ids: set       = set()
 
-    for keyword in SEARCH_KEYWORDS:
+    for keyword in settings_db.job_titles():
         log.info("WTTJ – searching: %s", keyword)
         try:
             data = _algolia_query(keyword)

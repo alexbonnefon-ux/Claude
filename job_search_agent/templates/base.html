@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Job Search Agent{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { sans: ['Inter','system-ui','sans-serif'] } } }
+    }
+  </script>
+  <style>
+    [x-cloak]{display:none}
+    .badge{@apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium}
+    .btn{@apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors}
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-900 antialiased">
+
+<!-- ── Top navigation ─────────────────────────────────────────────── -->
+<nav class="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
+
+    <a href="/" class="flex items-center gap-2 font-semibold text-gray-800 hover:text-blue-600">
+      <span class="text-lg">🔍</span>Job Search Agent
+    </a>
+
+    <div class="flex items-center gap-1 text-sm">
+      <a href="/"        class="px-3 py-2 rounded-md font-medium
+        {% if request.path == '/' %}bg-blue-50 text-blue-700{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+        Dashboard
+      </a>
+      <a href="/history" class="px-3 py-2 rounded-md font-medium
+        {% if request.path == '/history' %}bg-blue-50 text-blue-700{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+        History
+      </a>
+      <a href="/settings" class="px-3 py-2 rounded-md font-medium
+        {% if request.path == '/settings' %}bg-blue-50 text-blue-700{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+        Settings
+      </a>
+    </div>
+
+    <!-- Scraping indicator -->
+    <div id="scrape-indicator" class="flex items-center gap-1.5 text-xs text-amber-600
+         {% if not is_running %}hidden{% endif %}">
+      <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+      Scraping…
+    </div>
+
+  </div>
+</nav>
+
+<!-- ── Toast notification ─────────────────────────────────────────── -->
+<div id="toast"
+     class="fixed bottom-5 right-5 z-50 hidden transition-opacity duration-300">
+  <div id="toast-inner"
+       class="px-4 py-3 rounded-xl shadow-lg text-sm text-white font-medium max-w-xs">
+  </div>
+</div>
+
+<!-- ── Main ───────────────────────────────────────────────────────── -->
+<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+  {% block content %}{% endblock %}
+</main>
+
+<script src="/static/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

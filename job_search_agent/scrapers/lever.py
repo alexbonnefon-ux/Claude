@@ -8,7 +8,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-from config import LEVER_COMPANIES, LOOKBACK_HOURS, JOB_TITLES, SEARCH_KEYWORDS
+import settings_db
+from config import LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import fetch_json, make_job_id
 
@@ -19,7 +20,7 @@ API_BASE = "https://api.lever.co/v0/postings/{company}?mode=json"
 
 def _matches_title(title: str) -> bool:
     t = title.lower()
-    return any(kw.lower() in t for kw in JOB_TITLES + SEARCH_KEYWORDS)
+    return any(kw.lower() in t for kw in settings_db.job_titles())
 
 
 def scrape_company(company_name: str, identifier: str) -> List[Job]:
@@ -86,7 +87,7 @@ def scrape_company(company_name: str, identifier: str) -> List[Job]:
 
 def scrape_all() -> List[Job]:
     all_jobs: List[Job] = []
-    for company_name, identifier in LEVER_COMPANIES.items():
+    for company_name, identifier in settings_db.lever_companies().items():
         try:
             all_jobs.extend(scrape_company(company_name, identifier))
         except Exception as exc:

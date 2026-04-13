@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block title %}Settings – Job Search Agent{% endblock %}
+
+{% block content %}
+
+<div class="max-w-3xl">
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-xl font-bold text-gray-800">Settings</h1>
+  <button onclick="saveSettings()"
+          class="btn bg-blue-600 hover:bg-blue-700 text-white">
+    💾 Save all settings
+  </button>
+</div>
+
+<!-- ── 1. Job Titles ─────────────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-1">Job Titles to Search</h2>
+  <p class="text-xs text-gray-500 mb-3">Press <kbd class="bg-gray-100 px-1 rounded">Enter</kbd>
+     or <kbd class="bg-gray-100 px-1 rounded">,</kbd> to add a title.</p>
+  <div id="job-titles-tags"
+       class="flex flex-wrap gap-1.5 border border-gray-300 rounded-lg p-2 min-h-[42px]
+              focus-within:ring-2 focus-within:ring-blue-500 bg-white cursor-text">
+  </div>
+  <input type="hidden" id="job_titles_val">
+</section>
+
+<!-- ── 2. Salary ─────────────────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-4">Salary Thresholds (€)</h2>
+  <div class="grid grid-cols-3 gap-4">
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Minimum</span>
+      <input type="number" id="min_salary" value="{{ settings.min_salary }}" step="1000"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Target min</span>
+      <input type="number" id="target_salary_min" value="{{ settings.target_salary_min }}"
+             step="1000"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Target max</span>
+      <input type="number" id="target_salary_max" value="{{ settings.target_salary_max }}"
+             step="1000"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+  </div>
+</section>
+
+<!-- ── 3. Location ───────────────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-4">Location Filters</h2>
+  <div class="grid grid-cols-2 gap-3">
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Max on-site days / week</span>
+      <input type="number" id="max_onsite_days" value="{{ settings.max_onsite_days }}"
+             min="0" max="5"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm w-24
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Lookback hours per run</span>
+      <input type="number" id="lookback_hours" value="{{ settings.lookback_hours }}"
+             min="1" max="48"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm w-24
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+  </div>
+</section>
+
+<!-- ── 4. Excluded Keywords ──────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-1">Excluded Title Keywords</h2>
+  <p class="text-xs text-gray-500 mb-3">Jobs whose title contains any of these words are dropped.</p>
+  <div id="excl-title-tags"
+       class="flex flex-wrap gap-1.5 border border-gray-300 rounded-lg p-2 min-h-[42px]
+              focus-within:ring-2 focus-within:ring-blue-500 bg-white">
+  </div>
+  <input type="hidden" id="excluded_title_keywords_val">
+
+  <h2 class="font-semibold text-gray-800 mt-4 mb-1">Excluded Description Keywords</h2>
+  <p class="text-xs text-gray-500 mb-3">Jobs whose description contains these phrases are dropped.</p>
+  <div id="excl-desc-tags"
+       class="flex flex-wrap gap-1.5 border border-gray-300 rounded-lg p-2 min-h-[42px]
+              focus-within:ring-2 focus-within:ring-blue-500 bg-white">
+  </div>
+  <input type="hidden" id="excluded_description_keywords_val">
+</section>
+
+<!-- ── 5. Schedule ───────────────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-4">Scrape Schedule (Paris time)</h2>
+  <div class="flex items-center gap-4">
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Morning run</span>
+      <input type="time" id="schedule_morning"
+             value="{{ settings.schedule_times[0] if settings.schedule_times else '08:00' }}"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+    <label class="flex flex-col gap-1">
+      <span class="text-xs font-medium text-gray-500">Evening run</span>
+      <input type="time" id="schedule_evening"
+             value="{{ settings.schedule_times[1] if settings.schedule_times|length > 1 else '18:00' }}"
+             class="px-3 py-2 border border-gray-300 rounded-lg text-sm
+                    focus:ring-2 focus:ring-blue-500">
+    </label>
+  </div>
+  <p class="text-xs text-gray-400 mt-2">Changes take effect immediately (no restart needed).</p>
+</section>
+
+<!-- ── 6. Companies ──────────────────────────────────────────────── -->
+<section class="bg-white border border-gray-200 rounded-xl p-5 mb-5 shadow-sm">
+  <h2 class="font-semibold text-gray-800 mb-4">Companies to Monitor</h2>
+
+  {% for ats, companies in [
+    ('greenhouse_companies', settings.greenhouse_companies),
+    ('lever_companies',      settings.lever_companies),
+    ('ashby_companies',      settings.ashby_companies),
+  ] %}
+  <details class="mb-3 group" open>
+    <summary class="cursor-pointer font-medium text-sm text-gray-700 list-none flex items-center gap-2">
+      <span class="group-open:rotate-90 transition-transform">▶</span>
+      {% if 'greenhouse' in ats %}🌱 Greenhouse
+      {% elif 'lever' in ats %}⚙️ Lever
+      {% else %}🔷 Ashby{% endif %}
+      <span class="text-xs text-gray-400">({{ companies | length }} companies)</span>
+    </summary>
+    <div class="mt-3 ml-4 grid grid-cols-2 sm:grid-cols-3 gap-2" id="list-{{ ats }}">
+      {% for name, token in companies.items() %}
+      <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+        <input type="checkbox" checked
+               data-ats="{{ ats }}" data-name="{{ name }}" data-token="{{ token }}"
+               class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 company-cb">
+        {{ name }}
+      </label>
+      {% endfor %}
+    </div>
+    <!-- Add company -->
+    <div class="mt-2 ml-4 flex items-center gap-2">
+      <input type="text" placeholder="Company name"
+             id="new-name-{{ ats }}"
+             class="px-2 py-1 border border-gray-300 rounded text-xs w-32
+                    focus:ring-1 focus:ring-blue-500">
+      <input type="text" placeholder="Identifier / token"
+             id="new-token-{{ ats }}"
+             class="px-2 py-1 border border-gray-300 rounded text-xs w-32
+                    focus:ring-1 focus:ring-blue-500">
+      <button onclick="addCompany('{{ ats }}')"
+              class="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-xs rounded font-medium">
+        + Add
+      </button>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+
+<div class="flex justify-end">
+  <button onclick="saveSettings()"
+          class="btn bg-blue-600 hover:bg-blue-700 text-white">
+    💾 Save all settings
+  </button>
+</div>
+
+</div> <!-- max-w-3xl -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Tag-input component ─────────────────────────────────────────────────────
+function TagInput(containerId, hiddenId, initial) {
+  const container = document.getElementById(containerId);
+  const hidden    = document.getElementById(hiddenId);
+  let tags = [...initial];
+
+  function render() {
+    container.innerHTML = '';
+    tags.forEach((tag, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 ' +
+                       'text-blue-700 text-xs rounded-full font-medium';
+      chip.innerHTML = `${tag.replace(/</g,'&lt;')}
+        <button type="button" onclick="this.parentElement.__remove()"
+                class="text-blue-400 hover:text-blue-700 leading-none font-bold">×</button>`;
+      chip.__remove = () => { tags.splice(i,1); render(); };
+      container.appendChild(chip);
+    });
+    const inp = document.createElement('input');
+    inp.type        = 'text';
+    inp.placeholder = 'Add…';
+    inp.className   = 'text-xs px-1 py-0.5 border-none outline-none bg-transparent ' +
+                      'min-w-[80px] flex-1';
+    inp.onkeydown   = e => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const v = inp.value.trim().replace(/,$/,'');
+        if (v && !tags.includes(v)) { tags.push(v); render(); }
+        else inp.value = '';
+      }
+      if (e.key === 'Backspace' && inp.value === '' && tags.length) {
+        tags.pop(); render();
+      }
+    };
+    container.appendChild(inp);
+    container.onclick = () => inp.focus();
+    hidden.value = JSON.stringify(tags);
+  }
+
+  render();
+  return {
+    getTags: () => { hidden.value = JSON.stringify(tags); return tags; }
+  };
+}
+
+// ── Initialise tag inputs ───────────────────────────────────────────────────
+const titlesInput = TagInput(
+  'job-titles-tags', 'job_titles_val',
+  {{ settings.job_titles | tojson }}
+);
+const exclTitleInput = TagInput(
+  'excl-title-tags', 'excluded_title_keywords_val',
+  {{ settings.excluded_title_keywords | tojson }}
+);
+const exclDescInput = TagInput(
+  'excl-desc-tags', 'excluded_description_keywords_val',
+  {{ settings.excluded_description_keywords | tojson }}
+);
+
+// ── Add company row ─────────────────────────────────────────────────────────
+function addCompany(ats) {
+  const name  = document.getElementById('new-name-'  + ats).value.trim();
+  const token = document.getElementById('new-token-' + ats).value.trim();
+  if (!name || !token) { showToast('Enter both company name and identifier.', 'error'); return; }
+
+  const list = document.getElementById('list-' + ats);
+  const lbl  = document.createElement('label');
+  lbl.className = 'flex items-center gap-2 text-sm text-gray-700 cursor-pointer';
+  lbl.innerHTML = `<input type="checkbox" checked data-ats="${ats}"
+    data-name="${name}" data-token="${token}"
+    class="rounded border-gray-300 text-blue-600 company-cb"> ${name}`;
+  list.appendChild(lbl);
+
+  document.getElementById('new-name-'  + ats).value = '';
+  document.getElementById('new-token-' + ats).value = '';
+  showToast(`${name} added (save to persist).`);
+}
+
+// ── Collect companies from checkboxes ───────────────────────────────────────
+function collectCompanies(ats) {
+  const obj = {};
+  document.querySelectorAll(`.company-cb[data-ats="${ats}"]`).forEach(cb => {
+    if (cb.checked) obj[cb.dataset.name] = cb.dataset.token;
+  });
+  return obj;
+}
+
+// ── Save all settings ───────────────────────────────────────────────────────
+async function saveSettings() {
+  titlesInput.getTags();
+  exclTitleInput.getTags();
+  exclDescInput.getTags();
+
+  const payload = {
+    job_titles:                      JSON.parse(document.getElementById('job_titles_val').value || '[]'),
+    min_salary:                      parseInt(document.getElementById('min_salary').value),
+    target_salary_min:               parseInt(document.getElementById('target_salary_min').value),
+    target_salary_max:               parseInt(document.getElementById('target_salary_max').value),
+    max_onsite_days:                 parseInt(document.getElementById('max_onsite_days').value),
+    lookback_hours:                  parseInt(document.getElementById('lookback_hours').value),
+    excluded_title_keywords:         JSON.parse(document.getElementById('excluded_title_keywords_val').value || '[]'),
+    excluded_description_keywords:   JSON.parse(document.getElementById('excluded_description_keywords_val').value || '[]'),
+    schedule_times: [
+      document.getElementById('schedule_morning').value,
+      document.getElementById('schedule_evening').value,
+    ],
+    greenhouse_companies: collectCompanies('greenhouse_companies'),
+    lever_companies:      collectCompanies('lever_companies'),
+    ashby_companies:      collectCompanies('ashby_companies'),
+  };
+
+  const res = await fetch('/api/settings', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok && data.ok) {
+    showToast('✓ Settings saved!', 'success');
+  } else {
+    showToast('Error saving settings.', 'error');
+  }
+}
+</script>
+{% endblock %}

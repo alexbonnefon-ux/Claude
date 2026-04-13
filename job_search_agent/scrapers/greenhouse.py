@@ -8,7 +8,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-from config import GREENHOUSE_COMPANIES, LOOKBACK_HOURS, SEARCH_KEYWORDS, JOB_TITLES
+import settings_db
+from config import LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import fetch_json, make_job_id
 
@@ -19,7 +20,7 @@ API_BASE = "https://boards-api.greenhouse.io/v1/boards/{company}/jobs"
 
 def _matches_title(title: str) -> bool:
     title_l = title.lower()
-    return any(kw.lower() in title_l for kw in JOB_TITLES + SEARCH_KEYWORDS)
+    return any(kw.lower() in title_l for kw in settings_db.job_titles())
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -89,7 +90,7 @@ def scrape_company(company_name: str, token: str) -> List[Job]:
 
 def scrape_all() -> List[Job]:
     all_jobs: List[Job] = []
-    for company_name, token in GREENHOUSE_COMPANIES.items():
+    for company_name, token in settings_db.greenhouse_companies().items():
         try:
             all_jobs.extend(scrape_company(company_name, token))
         except Exception as exc:

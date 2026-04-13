@@ -16,10 +16,8 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from config import (
-    SEARCH_KEYWORDS, LOOKBACK_HOURS,
-    LINKEDIN_EMAIL, LINKEDIN_PASSWORD,
-)
+import settings_db
+from config import LINKEDIN_EMAIL, LINKEDIN_PASSWORD, LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import make_job_id
 
@@ -188,7 +186,7 @@ def scrape_all() -> List[Job]:
         driver = get_driver(headless=True)
         _try_login(driver)
 
-        for keyword in SEARCH_KEYWORDS:
+        for keyword in settings_db.job_titles():
             try:
                 jobs = _scrape_keyword(driver, keyword)
                 for j in jobs:

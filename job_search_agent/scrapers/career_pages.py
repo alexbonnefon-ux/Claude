@@ -10,9 +10,8 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from config import (
-    DIRECT_CAREER_PAGES, JOB_TITLES, SEARCH_KEYWORDS, LOOKBACK_HOURS,
-)
+import settings_db
+from config import LOOKBACK_HOURS
 from scorer import Job
 from scrapers.base import fetch_soup, make_job_id, get_driver
 
@@ -24,7 +23,7 @@ log = logging.getLogger(__name__)
 
 def _matches_title(title: str) -> bool:
     t = title.lower()
-    return any(kw.lower() in t for kw in JOB_TITLES + SEARCH_KEYWORDS)
+    return any(kw.lower() in t for kw in settings_db.job_titles())
 
 
 # ---------------------------------------------------------------------------
