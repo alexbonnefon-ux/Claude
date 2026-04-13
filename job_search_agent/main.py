@@ -2,17 +2,13 @@
 
 Run directly:
     python main.py
-
-Or via the cron wrapper script (see run.sh / setup_cron.sh).
 """
 import logging
 import sys
 from pathlib import Path
 
-# Allow running from any directory
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Load .env before importing anything that reads os.getenv()
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -21,23 +17,27 @@ from typing import List
 import database as db
 from config import LOOKBACK_HOURS
 from scorer import Job, enrich_and_score
-from email_sender import send_digest
 
 # Scrapers
 from scrapers import greenhouse, lever, ashby, linkedin, welcome_jungle, career_pages
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging – INFO only to file; WARNING+ to console so results stay readable
 # ---------------------------------------------------------------------------
+log_file = Path(__file__).parent / "agent.log"
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s %(levelname)-8s %(name)s – %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(Path(__file__).parent / "agent.log", encoding="utf-8"),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+# Full detail goes to the log file
+file_handler = logging.FileHandler(log_file, encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)-8s %(name)s – %(message)s", "%Y-%m-%d %H:%M:%S"
+))
+logging.getLogger().addHandler(file_handler)
 log = logging.getLogger("main")
 
 
@@ -100,30 +100,72 @@ def filter_and_score(raw_jobs: List[Job]) -> List[Job]:
     return new_jobs
 
 
-def record_and_send(jobs: List[Job], run_id: int) -> int:
-    """Persist jobs to DB and send email digest. Returns number of jobs sent."""
+SCORE_STARS = {5: "★★★★★", 4: "★★★★☆", 3: "★★★☆☆", 2: "★★☆☆☆", 1: "★☆☆☆☆"}
+
+
+def _salary(job: Job) -> str:
+    if job.salary_text:
+        return job.salary_text
+    if job.salary_min and job.salary_max:
+        return f"€{job.salary_min:,}–€{job.salary_max:,}"
+    if job.salary_min:
+        return f"From €{job.salary_min:,}"
+    return "Not specified"
+
+
+def _remote(job: Job) -> str:
+    if job.remote_policy == "remote":
+        return "Full remote"
+    if job.remote_policy == "hybrid":
+        d = job.onsite_days
+        return f"Hybrid ({d}d/wk on-site)" if d else "Hybrid"
+    if job.remote_policy == "onsite":
+        return "On-site"
+    return "Unknown"
+
+
+def print_digest(jobs: List[Job]) -> None:
+    """Print a formatted digest to the terminal."""
+    WIDTH = 70
+    print("\n" + "═" * WIDTH)
+    print(f"  JOB SEARCH DIGEST  –  {len(jobs)} new matching job{'s' if len(jobs)!=1 else ''}")
+    print("═" * WIDTH)
+
+    by_score: dict[int, list[Job]] = {}
+    for j in jobs:
+        by_score.setdefault(j.score, []).append(j)
+
+    for score in sorted(by_score.keys(), reverse=True):
+        stars = SCORE_STARS.get(score, str(score))
+        group = by_score[score]
+        print(f"\n  {stars}  Score {score}/5  ({len(group)} job{'s' if len(group)!=1 else ''})")
+        print("  " + "─" * (WIDTH - 2))
+
+        for j in group:
+            print(f"\n  {j.title}")
+            print(f"  {j.company}")
+            print(f"    Location : {j.location}")
+            print(f"    Remote   : {_remote(j)}")
+            print(f"    Salary   : {_salary(j)}")
+            print(f"    Sector   : {j.sector or '–'}")
+            print(f"    Posted   : {j.date_posted or 'Unknown'}")
+            print(f"    Source   : {j.source}")
+            print(f"    Link     : {j.url}")
+
+    print("\n" + "═" * WIDTH + "\n")
+
+
+def record_jobs(jobs: List[Job]) -> None:
+    """Print results and mark jobs as seen in the DB."""
     if not jobs:
-        log.info("No new matching jobs – skipping email.")
-        return 0
+        print("\n  No new matching jobs found.\n")
+        return
 
-    # Sort by score desc, then company
     jobs.sort(key=lambda j: (-j.score, j.company))
+    print_digest(jobs)
 
-    log.info("Sending digest with %d jobs…", len(jobs))
-    try:
-        send_digest(jobs)
-        sent_count = len(jobs)
-    except Exception as exc:
-        log.error("Email send failed: %s", exc, exc_info=True)
-        sent_count = 0
-
-    # Mark all jobs as seen regardless of email success (avoid duplicates)
     for job in jobs:
         db.mark_seen(job.job_id, job.title, job.company, job.location, job.url)
-        if sent_count > 0:
-            db.mark_sent(job.job_id)
-
-    return sent_count
 
 
 # ---------------------------------------------------------------------------
@@ -131,27 +173,21 @@ def record_and_send(jobs: List[Job], run_id: int) -> int:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    log.info("=" * 60)
-    log.info("Job Search Agent starting (lookback: %dh)", LOOKBACK_HOURS)
-    log.info("=" * 60)
+    print(f"\nSearching for jobs (last {LOOKBACK_HOURS}h)…")
 
     db.init_db()
     run_id = db.start_run()
 
     try:
-        raw_jobs   = gather_all_jobs()
-        log.info("Total raw jobs collected: %d", len(raw_jobs))
+        raw_jobs = gather_all_jobs()
+        new_jobs = filter_and_score(raw_jobs)
 
-        new_jobs   = filter_and_score(raw_jobs)
-        log.info("New matching jobs after filtering: %d", len(new_jobs))
-
-        sent_count = record_and_send(new_jobs, run_id)
-
-        db.finish_run(run_id, jobs_found=len(new_jobs), jobs_sent=sent_count)
-        log.info("Run complete – found %d, sent %d.", len(new_jobs), sent_count)
+        record_jobs(new_jobs)
+        db.finish_run(run_id, jobs_found=len(new_jobs), jobs_sent=0)
 
     except Exception as exc:
-        log.error("Fatal error in main: %s", exc, exc_info=True)
+        print(f"\nError: {exc}", file=sys.stderr)
+        log.error("Fatal error: %s", exc, exc_info=True)
         db.finish_run(run_id, jobs_found=0, jobs_sent=0, status="error")
         sys.exit(1)
 
