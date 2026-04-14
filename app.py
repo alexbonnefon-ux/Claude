@@ -136,6 +136,266 @@ def save_settings():
 
 
 # ---------------------------------------------------------------------------
+# /test-scraper – debug endpoint
+# ---------------------------------------------------------------------------
+
+@app.route("/test-scraper")
+def test_scraper():
+    """
+    Run one full scrape cycle synchronously and render a detailed HTML
+    report showing per-scraper results, errors, timing, and matched jobs.
+    Useful for debugging when deployed or running locally.
+    """
+    import time as _time
+    import traceback as _tb
+    import html as _html
+    from config import SERPAPI_KEY
+    from scrapers import greenhouse, lever, ashby, career_pages, serpapi_jobs
+    from scorer import enrich_and_score
+
+    SOURCES = [
+        ("Greenhouse (direct API)",  greenhouse.scrape_all),
+        ("Lever (direct API)",       lever.scrape_all),
+        ("Ashby (direct API)",       ashby.scrape_all),
+        ("Career Pages (Selenium)",  career_pages.scrape_all),
+        ("Google Jobs / SerpAPI",    serpapi_jobs.scrape_all),
+    ]
+
+    env_checks = {
+        "SERPAPI_KEY":    ("✓ Set" if SERPAPI_KEY else "✗ Not set – add to .env", bool(SERPAPI_KEY)),
+        "Database path":  (str(db.DB_PATH), True),
+        "Python path":    (str(Path(__file__).parent), True),
+    }
+
+    results = []
+    all_raw = []
+
+    for name, fn in SOURCES:
+        t0 = _time.time()
+        jobs, error = [], None
+        try:
+            jobs = fn()
+        except Exception:
+            error = _tb.format_exc()
+        elapsed = round(_time.time() - t0, 2)
+        all_raw.extend(jobs)
+        results.append({
+            "name":    name,
+            "count":   len(jobs),
+            "elapsed": elapsed,
+            "error":   error,
+            "samples": [
+                {"title": j.title, "company": j.company,
+                 "location": j.location, "url": j.url, "source": j.source}
+                for j in jobs[:5]
+            ],
+        })
+
+    # Dedup + filter + score (don't touch DB – read-only test)
+    seen: set = set()
+    matched = []
+    skipped_seen = 0
+    skipped_filter = 0
+    for job in all_raw:
+        if job.job_id in seen:
+            continue
+        seen.add(job.job_id)
+        if db.is_seen(job.job_id):
+            skipped_seen += 1
+            continue
+        enriched = enrich_and_score(job)
+        if enriched is None:
+            skipped_filter += 1
+        else:
+            matched.append(enriched)
+
+    matched.sort(key=lambda j: (-j.score, j.company))
+
+    # ── Build HTML inline (no template dependency) ──────────────────────────
+    def esc(s): return _html.escape(str(s or ""))
+
+    if not matched:
+        matched_table_html = (
+            "<p class='text-gray-400 text-sm py-4 text-center'>"
+            "No jobs matched the current filters.</p>"
+        )
+    else:
+        matched_table_html = (
+            '<div class="overflow-x-auto">'
+            '<table class="w-full text-sm">'
+            '<thead><tr class="text-left text-xs text-gray-400 font-semibold">'
+            '<th class="pb-2 pr-3">Score</th>'
+            '<th class="pb-2 pr-3">Title</th>'
+            '<th class="pb-2 pr-3">Company</th>'
+            '<th class="pb-2 pr-3">Location</th>'
+            '<th class="pb-2 pr-3">Remote</th>'
+            '<th class="pb-2 pr-3">Salary</th>'
+            '<th class="pb-2 pr-3">Sector</th>'
+            '<th class="pb-2">Source</th>'
+            '</tr></thead>'
+            f'<tbody>{rows_matched}</tbody>'
+            '</table></div>'
+        )
+
+    rows_scrapers = ""
+    for r in results:
+        status_cls = "text-red-600" if r["error"] else "text-emerald-600"
+        status_txt = "ERROR" if r["error"] else "OK"
+        sample_rows = "".join(
+            f'<tr class="border-t border-gray-100">'
+            f'<td class="py-1 pr-3 text-gray-700">{esc(s["title"])}</td>'
+            f'<td class="py-1 pr-3 text-gray-500">{esc(s["company"])}</td>'
+            f'<td class="py-1 pr-3 text-gray-400 text-xs">{esc(s["location"])}</td>'
+            f'<td class="py-1 text-xs"><a href="{esc(s["url"])}" target="_blank" '
+            f'class="text-blue-600 hover:underline truncate block max-w-xs">{esc(s["url"])}</a></td>'
+            f'</tr>'
+            for s in r["samples"]
+        )
+        error_block = (
+            f'<pre class="mt-2 text-xs bg-red-50 text-red-800 p-3 rounded overflow-x-auto">'
+            f'{esc(r["error"])}</pre>' if r["error"] else ""
+        )
+        rows_scrapers += f"""
+        <div class="border border-gray-200 rounded-xl p-4 mb-3 bg-white shadow-sm">
+          <div class="flex items-center justify-between mb-1">
+            <h3 class="font-semibold text-gray-800">{esc(r["name"])}</h3>
+            <div class="flex items-center gap-3 text-sm">
+              <span class="{status_cls} font-bold">{status_txt}</span>
+              <span class="text-gray-500">{r["count"]} raw jobs</span>
+              <span class="text-gray-400">{r["elapsed"]}s</span>
+            </div>
+          </div>
+          {error_block}
+          {"" if not r["samples"] else f'''
+          <details class="mt-2">
+            <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600">
+              Show {len(r["samples"])} sample(s)
+            </summary>
+            <div class="overflow-x-auto mt-2">
+              <table class="text-xs w-full">
+                <thead><tr class="text-left text-gray-400">
+                  <th class="pr-3">Title</th><th class="pr-3">Company</th>
+                  <th class="pr-3">Location</th><th>URL</th>
+                </tr></thead>
+                <tbody>{sample_rows}</tbody>
+              </table>
+            </div>
+          </details>'''}
+        </div>"""
+
+    rows_matched = ""
+    score_colors = {5:"text-emerald-600",4:"text-blue-600",3:"text-amber-500",
+                    2:"text-gray-500",1:"text-gray-400"}
+    for j in matched[:50]:
+        sc = "★" * j.score + "☆" * (5 - j.score)
+        sc_cls = score_colors.get(j.score, "text-gray-400")
+        sal = j.salary_text or (
+            f"€{j.salary_min:,}–€{j.salary_max:,}" if j.salary_min and j.salary_max else "–"
+        )
+        rows_matched += f"""
+        <tr class="border-t border-gray-100 hover:bg-gray-50">
+          <td class="py-2 pr-3 font-bold {sc_cls} whitespace-nowrap">{esc(sc)}</td>
+          <td class="py-2 pr-3">
+            <a href="{esc(j.url)}" target="_blank"
+               class="text-blue-600 hover:underline font-medium">{esc(j.title)}</a>
+          </td>
+          <td class="py-2 pr-3 text-gray-600">{esc(j.company)}</td>
+          <td class="py-2 pr-3 text-gray-500 text-xs">{esc(j.location)}</td>
+          <td class="py-2 pr-3 text-gray-500 text-xs">{esc(j.remote_policy)}
+            {"(" + str(j.onsite_days) + "d)" if j.onsite_days else ""}</td>
+          <td class="py-2 pr-3 text-gray-500 text-xs">{esc(sal)}</td>
+          <td class="py-2 pr-3 text-gray-400 text-xs">{esc(j.sector)}</td>
+          <td class="py-2 text-gray-400 text-xs">{esc(j.source)}</td>
+        </tr>"""
+
+    env_rows = "".join(
+        f'<tr class="border-t border-gray-100">'
+        f'<td class="py-1.5 pr-6 font-mono text-xs text-gray-600">{esc(k)}</td>'
+        f'<td class="py-1.5 text-xs {"text-emerald-600" if ok else "text-red-600"}">'
+        f'{esc(v)}</td></tr>'
+        for k, (v, ok) in env_checks.items()
+    )
+
+    def _stat_card(value, label):
+        return (
+            f'<div class="bg-white border border-gray-200 rounded-xl p-3 '
+            f'shadow-sm text-center">'
+            f'<p class="text-2xl font-bold text-gray-800">{value}</p>'
+            f'<p class="text-xs text-gray-400 mt-0.5">{label}</p>'
+            f'</div>'
+        )
+
+    summary_cards = "".join([
+        _stat_card(sum(r["count"] for r in results), "Raw jobs found"),
+        _stat_card(len(matched),   "Passed filters"),
+        _stat_card(skipped_seen,   "Already in DB"),
+        _stat_card(skipped_filter, "Filtered out"),
+    ])
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scraper Test – Job Search Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 antialiased">
+<div class="max-w-5xl mx-auto px-4 py-8">
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">🔬 Scraper Test</h1>
+      <p class="text-sm text-gray-500 mt-0.5">
+        Run at {datetime.now().strftime("%d %b %Y %H:%M:%S")} (local time)
+      </p>
+    </div>
+    <a href="/" class="text-sm text-blue-600 hover:underline">← Dashboard</a>
+  </div>
+
+  <!-- Environment -->
+  <section class="bg-white border border-gray-200 rounded-xl p-4 shadow-sm mb-6">
+    <h2 class="font-semibold text-gray-700 mb-3">Environment</h2>
+    <table class="text-sm"><tbody>{env_rows}</tbody></table>
+  </section>
+
+  <!-- Summary -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+    {summary_cards}
+  </div>
+
+  <!-- Per-scraper results -->
+  <section class="mb-6">
+    <h2 class="font-semibold text-gray-700 mb-3">Scrapers</h2>
+    {rows_scrapers}
+  </section>
+
+  <!-- Matched jobs -->
+  <section class="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+    <h2 class="font-semibold text-gray-700 mb-3">
+      Matched Jobs ({len(matched)})
+      <span class="text-xs font-normal text-gray-400 ml-1">
+        – not saved to DB during test
+        {f"– showing first 50" if len(matched) > 50 else ""}
+      </span>
+    </h2>
+    {matched_table_html}
+  </section>
+
+  <p class="text-center text-xs text-gray-400 mt-6">
+    <a href="/test-scraper" class="hover:underline">🔄 Run again</a>
+    &nbsp;·&nbsp;
+    <a href="/" class="hover:underline">Dashboard</a>
+    &nbsp;·&nbsp;
+    <a href="/settings" class="hover:underline">Settings</a>
+  </p>
+</div>
+</body>
+</html>"""
+
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

@@ -148,7 +148,13 @@ SMTP_USER       = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD   = os.getenv("SMTP_PASSWORD", "")   # Gmail App Password
 
 # ---------------------------------------------------------------------------
-# Optional LinkedIn credentials (improves scraping reliability)
+# SerpAPI (replaces LinkedIn / WTTJ scrapers)
+# Sign up at https://serpapi.com – free plan: 100 searches / month
+# ---------------------------------------------------------------------------
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Optional LinkedIn credentials (kept for reference, no longer used)
 # ---------------------------------------------------------------------------
 LINKEDIN_EMAIL    = os.getenv("LINKEDIN_EMAIL", "")
 LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")

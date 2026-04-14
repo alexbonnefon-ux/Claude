@@ -19,7 +19,7 @@ from typing import List
 import database as db
 import settings_db
 from scorer import Job, enrich_and_score
-from scrapers import greenhouse, lever, ashby, linkedin, welcome_jungle, career_pages
+from scrapers import greenhouse, lever, ashby, career_pages, serpapi_jobs
 
 # ---------------------------------------------------------------------------
 # Logging – WARNING+ to console, full INFO to file
@@ -47,12 +47,14 @@ log = logging.getLogger("main")
 def gather_all_jobs() -> List[Job]:
     all_raw: List[Job] = []
     sources = [
-        ("Greenhouse",        greenhouse.scrape_all),
-        ("Lever",             lever.scrape_all),
-        ("Ashby",             ashby.scrape_all),
-        ("Welcome to Jungle", welcome_jungle.scrape_all),
-        ("Career Pages",      career_pages.scrape_all),
-        ("LinkedIn",          linkedin.scrape_all),
+        # Direct ATS API scrapers – reliable, no auth needed
+        ("Greenhouse",   greenhouse.scrape_all),
+        ("Lever",        lever.scrape_all),
+        ("Ashby",        ashby.scrape_all),
+        ("Career Pages", career_pages.scrape_all),
+        # SerpAPI: Google Jobs engine + Google site: search fallback
+        # (replaces blocked LinkedIn / WTTJ scrapers)
+        ("Google Jobs / SerpAPI", serpapi_jobs.scrape_all),
     ]
     for name, fn in sources:
         log.info("── Scraper: %s ──", name)
