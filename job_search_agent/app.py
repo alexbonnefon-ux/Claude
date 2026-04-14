@@ -1,6 +1,7 @@
 """Flask web dashboard for the Job Search Agent."""
 import atexit
 import logging
+import os
 import sys
 import threading
 from datetime import datetime
@@ -155,4 +156,5 @@ if __name__ == "__main__":
         ],
     )
     create_app()
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
