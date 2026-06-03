@@ -1,14 +1,16 @@
 """
 Indeed RSS feed scraper.
 Parses multiple RSS feeds for different role / location combinations.
+Uses stdlib xml.etree.ElementTree to avoid feedparser/sgmllib Python 3.11 issues.
 """
 import asyncio
+import re
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import List
 from urllib.parse import quote_plus
+from xml.etree import ElementTree
 import httpx
-import feedparser
 from loguru import logger
 
 from ..database import Job
@@ -91,51 +93,60 @@ class IndeedRSSScraper(BaseScraper):
         resp = await client.get(url)
         resp.raise_for_status()
 
-        feed = feedparser.parse(resp.text)
         jobs: List[Job] = []
-        for entry in feed.entries:
+        try:
+            root = ElementTree.fromstring(resp.text)
+        except ElementTree.ParseError as exc:
+            logger.debug("Indeed: XML parse error for query='{}': {}", query, exc)
+            return jobs
+
+        # RSS 2.0: channel/item
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        items = root.findall(".//item")
+        for item in items:
             try:
-                job = self._parse_entry(entry)
+                job = self._parse_item(item)
                 jobs.append(job)
             except Exception as exc:
-                logger.debug("Indeed: failed to parse entry: {}", exc)
+                logger.debug("Indeed: failed to parse item: {}", exc)
 
         logger.debug("Indeed: {} results for query='{}' loc='{}'", len(jobs), query, location)
         return jobs
 
-    def _parse_entry(self, entry) -> Job:
-        title = entry.get("title", "")
-        link = entry.get("link", "")
-        summary = entry.get("summary", "")
+    def _parse_item(self, item: ElementTree.Element) -> Job:
+        def _text(tag: str) -> str:
+            el = item.find(tag)
+            return el.text.strip() if el is not None and el.text else ""
+
+        title_raw = _text("title")
+        link = _text("link")
+        summary = _text("description")
+        published = _text("pubDate")
 
         # Indeed RSS format: "Title - Company (Location)"
         company = ""
-        if " - " in title:
-            parts = title.rsplit(" - ", 1)
+        title_clean = title_raw
+        if " - " in title_raw:
+            parts = title_raw.rsplit(" - ", 1)
             title_clean = parts[0].strip()
             company_loc = parts[1]
             if "(" in company_loc:
                 company = company_loc[:company_loc.rfind("(")].strip()
             else:
                 company = company_loc.strip()
-        else:
-            title_clean = title
 
-        # Extract location from summary
+        # Extract location from HTML summary
         location = ""
-        import re
         loc_match = re.search(r"<b>Lieu\s*:</b>\s*([^<]+)", summary)
         if loc_match:
             location = loc_match.group(1).strip()
         else:
-            # Try to find location in the title parenthetical
-            paren_match = re.search(r"\(([^)]+)\)\s*$", title)
+            paren_match = re.search(r"\(([^)]+)\)\s*$", title_raw)
             if paren_match:
                 location = paren_match.group(1).strip()
 
-        # Parse posted date
+        # Parse posted date (RFC 2822)
         posted_date = None
-        published = entry.get("published", "")
         if published:
             try:
                 posted_date = parsedate_to_datetime(published)

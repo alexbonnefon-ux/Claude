@@ -1,7 +1,33 @@
-# Job Scraper – Alexis Bonnefon
+# HR Job Radar — Alexis Bonnefon
 
-Automated daily job scraper for **Senior HR roles** in France.  
-Runs every morning, emails a scored digest to `alexbonnefon@gmail.com`.
+Automated job scraper and **web dashboard** for **Senior HR roles** in France.  
+Runs on demand or daily via GitHub Actions. Access results at `http://localhost:8080`.
+
+## Running the Web Dashboard
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+playwright install chromium
+
+# Copy and configure env vars
+cp .env.example .env
+# Edit .env with your ANTHROPIC_API_KEY
+
+# Start the web server
+uvicorn src.web_app:app --host 0.0.0.0 --port 8080
+
+# Or use the built-in launcher:
+python -m src.main --web --port 8080
+```
+
+Open `http://localhost:8080` in your browser. Click **Refresh Jobs** to trigger all scrapers.
+
+## Running as CLI (no web server)
+
+```bash
+python -m src.main
+```
 
 ## What it does
 
