@@ -1,0 +1,35 @@
+# Environment
+.env
+*.env
+
+# Database (kept in Actions cache, not git)
+*.db
+*.db-wal
+*.db-shm
+
+# Static site output (written by CI, not tracked in source)
+docs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Playwright
+playwright-report/
+test-results/
