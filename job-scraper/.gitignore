@@ -2,10 +2,13 @@
 .env
 *.env
 
-# Database
+# Database (kept in Actions cache, not git)
 *.db
 *.db-wal
 *.db-shm
+
+# Static site output (written by CI, not tracked in source)
+docs/
 
 # Python
 __pycache__/
