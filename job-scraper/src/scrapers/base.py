@@ -1,206 +1,185 @@
-"""Base scraper class and Job data model."""
-
+"""
+Abstract base class for all job scrapers.
+"""
 import asyncio
 import random
-import re
+import hashlib
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Dict, Any
-
-import httpx
+from typing import List, Optional
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from src.config import USER_AGENTS, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX, MAX_RETRIES
-
-
-@dataclass
-class Job:
-    """Standardized job data model."""
-    source: str
-    job_id: str
-    title: str
-    company: str
-    url: str
-    location: Optional[str] = None
-    remote_policy: Optional[str] = None  # "remote", "hybrid", "onsite"
-    salary_min: Optional[int] = None
-    salary_max: Optional[int] = None
-    salary_estimated: bool = False
-    posted_date: Optional[datetime] = None
-    description: Optional[str] = None
-    score: Optional[float] = None
-    score_details: Optional[Dict[str, Any]] = None
-    raw_data: Optional[Dict[str, Any]] = None
-
-
-def parse_salary(text: str) -> tuple[Optional[int], Optional[int]]:
-    """
-    Parse salary range from a string.
-    Returns (min, max) as integers (annual EUR).
-    """
-    if not text:
-        return None, None
-
-    text = text.replace(" ", "").replace(" ", "").replace(",", "")
-
-    # Detect monthly (k€/mois or /mois) and convert
-    is_monthly = bool(re.search(r"mois|month", text, re.IGNORECASE))
-
-    # Extract numbers
-    numbers = re.findall(r"(\d{2,6})", text)
-    if not numbers:
-        return None, None
-
-    values = [int(n) for n in numbers]
-
-    # Handle k€ (thousands)
-    if re.search(r"k€|k\s*€|K€", text, re.IGNORECASE):
-        values = [v * 1000 for v in values]
-
-    if is_monthly:
-        values = [v * 12 for v in values]
-
-    # Sanity check: plausible annual salaries between 15k and 500k
-    values = [v for v in values if 15000 <= v <= 500000]
-    if not values:
-        return None, None
-
-    salary_min = min(values)
-    salary_max = max(values)
-    if salary_min == salary_max:
-        salary_max = None
-
-    return salary_min, salary_max
-
-
-def detect_remote_policy(text: str) -> Optional[str]:
-    """Detect remote work policy from job text."""
-    if not text:
-        return None
-    text_lower = text.lower()
-
-    full_remote_patterns = [
-        "full remote", "full-remote", "100% remote", "100% télétravail",
-        "télétravail complet", "remote first", "remote-first",
-        "entièrement en télétravail", "fully remote",
-    ]
-    hybrid_patterns = [
-        "hybride", "hybrid", "télétravail partiel", "jours de télétravail",
-        "jours par semaine en télétravail", "remote partiel",
-    ]
-
-    for pattern in full_remote_patterns:
-        if pattern in text_lower:
-            return "remote"
-
-    for pattern in hybrid_patterns:
-        if pattern in text_lower:
-            return "hybrid"
-
-    return "onsite"
+from ..config import USER_AGENTS, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX, MAX_RETRIES, BACKOFF_FACTOR
+from ..database import Job
 
 
 class BaseScraper(ABC):
-    """Abstract base class for all job scrapers."""
+    """Abstract base scraper providing rate limiting, retries and normalization."""
 
-    SOURCE_NAME: str = "unknown"
+    name: str = "base"
 
     def __init__(self) -> None:
-        self._user_agent = random.choice(USER_AGENTS)
-        self._client: Optional[httpx.AsyncClient] = None
+        self._user_agents = USER_AGENTS.copy()
+        self._request_count = 0
 
-    def _get_headers(self) -> Dict[str, str]:
-        """Return HTTP headers with a rotated user agent."""
-        return {
-            "User-Agent": self._user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-        }
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Return (or create) a shared async HTTP client."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers=self._get_headers(),
-                timeout=30.0,
-                follow_redirects=True,
-            )
-        return self._client
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-
-    async def _sleep_between_requests(self) -> None:
-        """Wait a random delay between requests to be polite."""
-        delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
-        await asyncio.sleep(delay)
-
-    @retry(
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-        reraise=True,
-    )
-    async def _fetch(self, url: str, **kwargs) -> httpx.Response:
-        """Fetch a URL with retries and exponential backoff."""
-        client = await self._get_client()
-        # Rotate user agent occasionally
-        if random.random() < 0.3:
-            self._user_agent = random.choice(USER_AGENTS)
-            client.headers.update({"User-Agent": self._user_agent})
-        await self._sleep_between_requests()
-        response = await client.get(url, **kwargs)
-        response.raise_for_status()
-        return response
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     @abstractmethod
     async def scrape(self) -> List[Job]:
-        """Scrape jobs and return a list of Job objects."""
+        """
+        Perform the scraping and return a list of Job objects.
+        Must be implemented by every concrete scraper.
+        """
         ...
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def get_user_agent(self) -> str:
+        """Return a random user agent string from the pool."""
+        return random.choice(self._user_agents)
+
+    async def handle_rate_limit(self, attempt: int = 0) -> None:
+        """
+        Sleep with exponential backoff between requests.
+        attempt=0 → normal inter-request delay
+        attempt>0 → exponential backoff after a failure
+        """
+        if attempt == 0:
+            delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
+        else:
+            delay = min(REQUEST_DELAY_MIN * (BACKOFF_FACTOR ** attempt) + random.uniform(0, 1), 60)
+        logger.debug("{} rate limit delay: {:.1f}s (attempt={})", self.name, delay, attempt)
+        await asyncio.sleep(delay)
+
+    async def retry(self, coro_func, *args, **kwargs):
+        """
+        Call an async function up to MAX_RETRIES times with exponential backoff.
+        Returns the result or raises the last exception.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                if attempt > 0:
+                    await self.handle_rate_limit(attempt)
+                return await coro_func(*args, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "{} attempt {}/{} failed: {}",
+                    self.name, attempt + 1, MAX_RETRIES, exc
+                )
+        raise last_exc
+
+    @staticmethod
+    def make_job_id(url: str, title: str = "", company: str = "") -> str:
+        """
+        Generate a stable, unique job ID from the URL (and optionally title/company).
+        Falls back to a hash when no structured ID is available.
+        """
+        raw = (url + title + company).strip().lower()
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def normalize_job(
         self,
         *,
-        job_id: str,
         title: str,
         company: str,
+        location: str,
         url: str,
-        location: Optional[str] = None,
-        salary_text: Optional[str] = None,
-        description: Optional[str] = None,
+        job_id: Optional[str] = None,
+        description: str = "",
+        remote_policy: str = "unknown",
+        salary_min: Optional[int] = None,
+        salary_max: Optional[int] = None,
+        salary_estimated: bool = False,
         posted_date: Optional[datetime] = None,
-        raw_data: Optional[Dict[str, Any]] = None,
+        raw_data: Optional[dict] = None,
     ) -> Job:
-        """Build a standardized Job from raw fields."""
-        salary_min, salary_max = parse_salary(salary_text or "")
-
-        combined_text = " ".join(filter(None, [title, location, description or ""]))
-        remote_policy = detect_remote_policy(combined_text)
+        """
+        Return a standardized Job dataclass from raw scraper data.
+        Infers remote_policy from location/description text if not explicitly set.
+        """
+        if remote_policy == "unknown":
+            remote_policy = self._infer_remote_policy(location, description)
 
         return Job(
-            source=self.SOURCE_NAME,
-            job_id=job_id,
+            source=self.name,
+            job_id=job_id or self.make_job_id(url, title, company),
             title=title.strip(),
             company=company.strip(),
+            location=location.strip(),
             url=url.strip(),
-            location=location,
+            description=description,
             remote_policy=remote_policy,
             salary_min=salary_min,
             salary_max=salary_max,
-            salary_estimated=False,
+            salary_estimated=salary_estimated,
             posted_date=posted_date,
-            description=description,
-            raw_data=raw_data,
+            raw_data=raw_data or {},
         )
 
-    async def handle_rate_limit(self, retry_after: int = 60) -> None:
-        """Handle a 429 response by waiting the specified number of seconds."""
-        logger.warning(f"{self.SOURCE_NAME}: rate limited, waiting {retry_after}s")
-        await asyncio.sleep(retry_after)
+    @staticmethod
+    def _infer_remote_policy(location: str, description: str) -> str:
+        """Guess the remote policy from free-text location and description."""
+        combined = (location + " " + description).lower()
+        full_remote_signals = [
+            "full remote", "fully remote", "100% remote",
+            "100% télétravail", "entièrement à distance",
+            "remote only", "distributed",
+        ]
+        hybrid_signals = [
+            "hybrid", "hybride", "télétravail partiel",
+            "partial remote", "remote partiel", "flex",
+        ]
+        onsite_signals = [
+            "sur site", "on-site", "onsite", "présentiel",
+            "no remote", "sans télétravail",
+        ]
+        for sig in full_remote_signals:
+            if sig in combined:
+                return "full"
+        for sig in hybrid_signals:
+            if sig in combined:
+                return "hybrid"
+        for sig in onsite_signals:
+            if sig in combined:
+                return "onsite"
+        if "remote" in combined or "télétravail" in combined:
+            return "hybrid"
+        return "unknown"
+
+    @staticmethod
+    def parse_salary(text: str) -> tuple[Optional[int], Optional[int]]:
+        """
+        Extract salary min/max from a free-text string.
+        Handles formats like "50K€", "50 000 €", "45 000 - 60 000 €", etc.
+        Returns (min, max) in euros per year, or (None, None) if not found.
+        """
+        import re
+        if not text:
+            return None, None
+
+        text_clean = text.lower().replace(" ", "").replace("\xa0", "").replace(",", ".")
+        # Match patterns like "50k", "50 000", "50000"
+        pattern = r"(\d[\d\s\.]*)\s*k?€?"
+        numbers = []
+        for match in re.finditer(r"(\d[\d\s]{0,5})\s*k", text_clean):
+            val = float(match.group(1).replace(" ", "").replace(".", ""))
+            numbers.append(int(val * 1000))
+        if not numbers:
+            for match in re.finditer(r"(\d{2,6})\s*(?:€|eur|euros?)", text_clean):
+                val = int(match.group(1).replace(" ", ""))
+                if val >= 1000:
+                    numbers.append(val)
+
+        if len(numbers) == 0:
+            return None, None
+        elif len(numbers) == 1:
+            v = numbers[0]
+            return v, None
+        else:
+            return min(numbers[:2]), max(numbers[:2])
