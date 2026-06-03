@@ -1,0 +1,81 @@
+name: Daily HR Job Scraper
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 7:00 UTC = 8:00 Paris (winter) / 9:00 (summer)
+  workflow_dispatch:        # manual trigger from GitHub Actions UI
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  scrape-and-publish:
+    name: Scrape, Score & Publish Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: job-scraper/requirements.txt
+
+      - name: Install Python dependencies
+        working-directory: job-scraper
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        working-directory: job-scraper
+        run: playwright install chromium --with-deps
+
+      - name: Restore jobs database cache
+        uses: actions/cache@v4
+        with:
+          path: job-scraper/jobs.db
+          key: jobs-db-${{ github.run_id }}
+          restore-keys: |
+            jobs-db-
+
+      - name: Run scrapers and score jobs
+        working-directory: job-scraper
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FRANCE_TRAVAIL_CLIENT_ID: ${{ secrets.FRANCE_TRAVAIL_CLIENT_ID }}
+          FRANCE_TRAVAIL_CLIENT_SECRET: ${{ secrets.FRANCE_TRAVAIL_CLIENT_SECRET }}
+        run: python -m src.main
+        continue-on-error: true
+
+      - name: Generate static dashboard
+        working-directory: job-scraper
+        run: python -m src.generate_static
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-logs-${{ github.run_id }}
+          path: job-scraper/scraper.log
+          retention-days: 7
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: job-scraper/docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
