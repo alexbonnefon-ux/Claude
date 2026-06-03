@@ -15,17 +15,91 @@ from .database import init_db, get_stats
 DOCS_DIR = Path(__file__).parent.parent / "docs"
 
 
+TARGET_ROLES_LOWER = {
+    "hrbp", "hr business partner", "responsable rh", "responsable ressources humaines",
+    "drh", "directeur rh", "directrice rh", "rrh", "head of people", "head of hr",
+    "people manager", "people partner", "hr manager", "hr generalist", "rh généraliste",
+    "people operations", "hr lead", "people lead", "vp people", "vp rh",
+    "responsable formation", "talent", "chargé rh", "chargée rh",
+}
+REMOTE_TERMS = {"remote", "télétravail", "full remote", "distributed", "wfh"}
+TECH_TERMS = {"startup", "saas", "tech", "ai", "fintech", "healthtech", "greentech", "scale-up", "scaleup"}
+TOURS_TERMS = {"tours", "indre-et-loire", "touraine", "37"}
+
+
+def rule_based_score(job: dict) -> float:
+    """Fallback scorer using keyword rules, no API needed."""
+    title = (job.get("title") or "").lower()
+    company = (job.get("company") or "").lower()
+    location = (job.get("location") or "").lower()
+    remote = (job.get("remote_policy") or "").lower()
+    description = (job.get("description") or "").lower()
+    combined = f"{title} {company} {location} {description}"
+
+    # Role match (0-3)
+    role_score = 0
+    if any(r in title for r in TARGET_ROLES_LOWER):
+        role_score = 3
+    elif any(r in combined for r in TARGET_ROLES_LOWER):
+        role_score = 2
+    elif any(w in title for w in ("rh", "hr", "people", "human resources", "ressources humaines")):
+        role_score = 1
+
+    # Location match (0-2)
+    loc_score = 0
+    if remote == "full" or any(t in combined for t in REMOTE_TERMS):
+        loc_score = 2
+    elif any(t in combined for t in TOURS_TERMS):
+        loc_score = 2
+    elif remote == "hybrid" or "hybride" in combined or "hybrid" in combined:
+        loc_score = 1
+
+    # Salary match (0-2): benefit of doubt if unknown
+    sal_min = job.get("salary_min") or 0
+    sal_score = 1  # default: unknown = benefit of doubt
+    if sal_min >= 65000:
+        sal_score = 2
+    elif sal_min > 0 and sal_min < 45000:
+        sal_score = 0
+
+    # Company match (0-2)
+    comp_score = 0
+    if any(t in combined for t in TECH_TERMS):
+        comp_score = 2
+    else:
+        comp_score = 1
+
+    # Freshness (0-1)
+    fresh_score = 0.5  # default: unknown date
+
+    total = role_score + loc_score + sal_score + comp_score + fresh_score
+    return round(min(10.0, total), 1)
+
+
 async def load_jobs(db_path: str = DB_PATH) -> list[dict]:
     import aiosqlite
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
+        # Load all jobs; apply fallback scoring for unscored ones
         cursor = await db.execute("""
             SELECT * FROM jobs
-            WHERE score IS NOT NULL AND score >= 4
-            ORDER BY score DESC, posted_date DESC
+            ORDER BY
+                CASE WHEN score IS NOT NULL THEN score ELSE 0 END DESC,
+                posted_date DESC
         """)
         rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        jobs = [dict(r) for r in rows]
+
+    # Apply fallback score for unscored jobs
+    for job in jobs:
+        if job.get("score") is None:
+            job["score"] = rule_based_score(job)
+            job["score_estimated"] = True
+        else:
+            job["score_estimated"] = False
+
+    # Filter: only score >= 4
+    return [j for j in jobs if (j.get("score") or 0) >= 4]
 
 
 def salary_display(job: dict) -> str:
@@ -98,10 +172,14 @@ def job_card(job: dict) -> str:
 
     score_details_html = f"<div class='score-breakdown'>{breakdown_lines}</div>" if breakdown_lines else ""
 
+    estimated = job.get("score_estimated", False)
+    score_label = f"~{score:.0f}" if estimated else f"{score:.0f}"
+    score_title = f"Score estimé {score}/10 (pas encore scoré par IA)" if estimated else f"Score IA {score}/10"
+
     return f"""
     <div class="job-card" data-score="{score}">
       <div class="card-left">
-        <div class="score-badge" style="background:{color}" title="Score {score}/10">{score:.0f}</div>
+        <div class="score-badge" style="background:{color}" title="{score_title}">{score_label}</div>
       </div>
       <div class="card-body">
         <div class="job-title">{job['title']}</div>
