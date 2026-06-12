@@ -13,7 +13,7 @@ from typing import List
 from loguru import logger
 
 from .config import JOB_MAX_AGE_HOURS, DB_PATH, ANTHROPIC_API_KEY
-from .database import Job, init_db, save_job, get_unscored_jobs, get_stats
+from .database import Job, init_db, save_job, get_unscored_jobs, get_all_jobs, get_stats
 from .scorer import JobScorer
 
 
@@ -155,6 +155,18 @@ async def run_pipeline(db_path: str = DB_PATH) -> dict:
             logger.info("Scored {} jobs", jobs_scored)
     else:
         logger.warning("ANTHROPIC_API_KEY not set – skipping scoring")
+
+    # ------------------------------------------------------------------
+    # 4. Classify all jobs into geographic categories
+    # ------------------------------------------------------------------
+    from .classifier import classify_jobs
+
+    all_db_jobs = await get_all_jobs(db_path)
+    if all_db_jobs:
+        logger.info("Classifying {} jobs into geographic categories...", len(all_db_jobs))
+        await classify_jobs(all_db_jobs, db_path)
+    else:
+        logger.info("No jobs in DB to classify")
 
     elapsed = (datetime.utcnow() - start_time).total_seconds()
     stats = await get_stats(db_path)

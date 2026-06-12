@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import DB_PATH
-from .database import init_db, get_stats
+from .database import init_db, get_jobs_by_category, get_stats
 
 DOCS_DIR = Path(__file__).parent.parent / "docs"
 
@@ -76,30 +76,28 @@ def rule_based_score(job: dict) -> float:
     return round(min(10.0, total), 1)
 
 
-async def load_jobs(db_path: str = DB_PATH) -> list[dict]:
-    import aiosqlite
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        # Load all jobs; apply fallback scoring for unscored ones
-        cursor = await db.execute("""
-            SELECT * FROM jobs
-            ORDER BY
-                CASE WHEN score IS NOT NULL THEN score ELSE 0 END DESC,
-                posted_date DESC
-        """)
-        rows = await cursor.fetchall()
-        jobs = [dict(r) for r in rows]
-
-    # Apply fallback score for unscored jobs
+def _apply_fallback_scores(jobs: list[dict]) -> list[dict]:
+    """Apply rule_based_score() to any job that has no AI score."""
     for job in jobs:
         if job.get("score") is None:
             job["score"] = rule_based_score(job)
             job["score_estimated"] = True
         else:
             job["score_estimated"] = False
+    return sorted(jobs, key=lambda j: (-(j.get("score") or 0), -(
+        _parse_ts(j.get("posted_date")) or 0
+    )))
 
-    # Filter: only score >= 4
-    return [j for j in jobs if (j.get("score") or 0) >= 4]
+
+def _parse_ts(date_str) -> float:
+    """Parse an ISO date string to a Unix timestamp for sorting, or 0 on failure."""
+    if not date_str:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
 
 def salary_display(job: dict) -> str:
@@ -117,7 +115,7 @@ def relative_date(date_str: str | None) -> str:
     if not date_str:
         return "Date inconnue"
     try:
-        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
@@ -130,7 +128,7 @@ def relative_date(date_str: str | None) -> str:
             return f"Il y a {delta} jours"
         return dt.strftime("%d/%m/%Y")
     except Exception:
-        return date_str[:10] if date_str else "?"
+        return str(date_str)[:10] if date_str else "?"
 
 
 def score_color(score: float) -> str:
@@ -143,14 +141,14 @@ def score_color(score: float) -> str:
 
 def remote_badge(policy: str) -> str:
     badges = {
-        "full":    ('<span class="badge badge-remote">🌍 Full Remote</span>', ),
-        "hybrid":  ('<span class="badge badge-hybrid">🏢 Hybride</span>', ),
-        "onsite":  ('<span class="badge badge-onsite">📍 Présentiel</span>', ),
+        "full":    '<span class="badge badge-remote">🌍 Full Remote</span>',
+        "hybrid":  '<span class="badge badge-hybrid">🏢 Hybride</span>',
+        "onsite":  '<span class="badge badge-onsite">📍 Présentiel</span>',
     }
-    return badges.get(policy, ('<span class="badge badge-unknown">❓ Non précisé</span>', ))[0]
+    return badges.get(policy, '<span class="badge badge-unknown">❓ Non précisé</span>')
 
 
-def job_card(job: dict) -> str:
+def job_card(job: dict, category: str) -> str:
     score = job.get("score") or 0
     details = json.loads(job.get("score_details") or "{}")
     color = score_color(score)
@@ -168,13 +166,43 @@ def job_card(job: dict) -> str:
     }
     for k, label in label_map.items():
         if k in details:
-            breakdown_lines += f"<div class='bd-row'><span>{label}</span><span>{details[k]}/{'3' if k=='role_match' else '2' if k!='freshness' else '1'}</span></div>"
+            breakdown_lines += (
+                f"<div class='bd-row'><span>{label}</span>"
+                f"<span>{details[k]}/{'3' if k=='role_match' else '2' if k!='freshness' else '1'}</span></div>"
+            )
 
     score_details_html = f"<div class='score-breakdown'>{breakdown_lines}</div>" if breakdown_lines else ""
 
     estimated = job.get("score_estimated", False)
     score_label = f"~{score:.0f}" if estimated else f"{score:.0f}"
     score_title = f"Score estimé {score}/10 (pas encore scoré par IA)" if estimated else f"Score IA {score}/10"
+
+    # --- Category-specific extras ---
+    extra_html = ""
+
+    if category == "paris_hybrid":
+        meta = json.loads(job.get("category_meta") or "{}")
+        if not meta.get("paris_days_specified", True):
+            extra_html = '<div class="extra-warning"><span class="warn-tag">⚠️ jours non précisés</span></div>'
+
+    elif category == "full_remote":
+        meta = json.loads(job.get("category_meta") or "{}")
+        c1 = meta.get("remote_check1", False)
+        c2 = meta.get("remote_check2", False)
+        c3 = meta.get("remote_check3", False)
+
+        def _chk(passed: bool, label: str) -> str:
+            cls = "check pass" if passed else "check fail"
+            symbol = "✓" if passed else "✗"
+            return f'<span class="{cls}">{symbol} {label}</span>'
+
+        extra_html = (
+            '<div class="remote-checks">'
+            + _chk(c1, "keyword")
+            + _chk(c2, "no location")
+            + _chk(c3, "AI vérifié")
+            + "</div>"
+        )
 
     return f"""
     <div class="job-card" data-score="{score}">
@@ -190,6 +218,7 @@ def job_card(job: dict) -> str:
           <span class="badge badge-salary">💶 {sal}</span>
           <span class="badge badge-source">{job['source']}</span>
         </div>
+        {extra_html}
         {score_details_html}
       </div>
       <div class="card-right">
@@ -199,7 +228,7 @@ def job_card(job: dict) -> str:
     </div>"""
 
 
-def section_html(title: str, emoji: str, color: str, jobs: list[dict]) -> str:
+def section_html(title: str, emoji: str, color: str, category: str, jobs: list[dict]) -> str:
     if not jobs:
         return f"""
     <section class="section">
@@ -207,7 +236,7 @@ def section_html(title: str, emoji: str, color: str, jobs: list[dict]) -> str:
       <div class="empty-section">Aucune offre dans cette catégorie aujourd'hui.</div>
     </section>"""
 
-    cards = "\n".join(job_card(j) for j in jobs)
+    cards = "\n".join(job_card(j, category) for j in jobs)
     return f"""
     <section class="section">
       <h2 class="section-title" style="color:{color}">{emoji} {title} <span class="count">{len(jobs)}</span></h2>
@@ -215,19 +244,16 @@ def section_html(title: str, emoji: str, color: str, jobs: list[dict]) -> str:
     </section>"""
 
 
-def build_html(jobs: list[dict], stats: dict, generated_at: datetime) -> str:
-    top     = [j for j in jobs if (j.get("score") or 0) >= 8]
-    good    = [j for j in jobs if 6 <= (j.get("score") or 0) < 8]
-    worth   = [j for j in jobs if 4 <= (j.get("score") or 0) < 6]
-
-    total_db = stats.get("total", 0)
-    gen_str  = generated_at.strftime("%d/%m/%Y à %H:%M UTC")
+def build_html(tours: list, paris: list, remote: list, total_db: int, generated_at: datetime) -> str:
+    gen_str = generated_at.strftime("%d/%m/%Y à %H:%M UTC")
 
     sections = (
-        section_html("Top Picks", "🏆", "#22c55e", top) +
-        section_html("Bons Matchs", "✅", "#eab308", good) +
-        section_html("À Surveiller", "👀", "#f97316", worth)
+        section_html("Tours & Indre-et-Loire", "📍", "#22c55e", "tours", tours)
+        + section_html("Paris — Hybride (max 3j/sem)", "🏙️", "#eab308", "paris_hybrid", paris)
+        + section_html("Full Remote", "🌍", "#3b82f6", "full_remote", remote)
     )
+
+    total_shown = len(tours) + len(paris) + len(remote)
 
     return f"""<!DOCTYPE html>
 <html lang="fr">
@@ -288,6 +314,14 @@ def build_html(jobs: list[dict], stats: dict, generated_at: datetime) -> str:
   .badge-salary   {{ background: #1a2e1a; color: #86efac; }}
   .badge-source   {{ background: #1e1e2e; color: var(--muted); }}
 
+  .extra-warning {{ margin-top: 6px; }}
+  .warn-tag {{ font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; background: #431407; color: #fdba74; font-weight: 600; }}
+
+  .remote-checks {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }}
+  .check {{ font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; font-weight: 600; }}
+  .check.pass {{ background: #14532d; color: #86efac; }}
+  .check.fail  {{ background: #3b1f1f; color: #fca5a5; }}
+
   .score-breakdown {{ margin-top: 8px; display: none; background: #0f1a2b; border-radius: 8px; padding: 8px 12px; font-size: 0.78rem; color: var(--muted); }}
   .job-card:hover .score-breakdown {{ display: block; }}
   .bd-row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
@@ -303,7 +337,6 @@ def build_html(jobs: list[dict], stats: dict, generated_at: datetime) -> str:
     header, .stats-bar, .trigger-bar, main {{ padding-left: 16px; padding-right: 16px; }}
     .card-right {{ display: none; }}
     .job-title {{ white-space: normal; }}
-    .apply-btn-mobile {{ display: block; margin-top: 8px; }}
   }}
 </style>
 </head>
@@ -315,16 +348,16 @@ def build_html(jobs: list[dict], stats: dict, generated_at: datetime) -> str:
     <p>Alexis Bonnefon · Tours, France · Offres HRBP, DRH, People Manager</p>
   </div>
   <div class="header-right">
-    <strong>{len(jobs)} offres filtrées</strong>
+    <strong>{total_shown} offres filtrées</strong>
     Mis à jour le {gen_str}
   </div>
 </header>
 
 <div class="stats-bar">
   <div class="stat"><div class="stat-num" style="color:var(--text)">{total_db}</div><div class="stat-label">Trouvées</div></div>
-  <div class="stat"><div class="stat-num" style="color:var(--green)">{len(top)}</div><div class="stat-label">Top Picks</div></div>
-  <div class="stat"><div class="stat-num" style="color:var(--yellow)">{len(good)}</div><div class="stat-label">Bons matchs</div></div>
-  <div class="stat"><div class="stat-num" style="color:var(--orange)">{len(worth)}</div><div class="stat-label">À surveiller</div></div>
+  <div class="stat"><div class="stat-num" style="color:var(--green)">{len(tours)}</div><div class="stat-label">Tours</div></div>
+  <div class="stat"><div class="stat-num" style="color:var(--yellow)">{len(paris)}</div><div class="stat-label">Paris hybride</div></div>
+  <div class="stat"><div class="stat-num" style="color:var(--blue)">{len(remote)}</div><div class="stat-label">Full remote</div></div>
 </div>
 
 <div class="trigger-bar">
@@ -348,15 +381,21 @@ def build_html(jobs: list[dict], stats: dict, generated_at: datetime) -> str:
 
 async def generate(db_path: str = DB_PATH, output_dir: Path = DOCS_DIR) -> Path:
     await init_db(db_path)
-    jobs = await load_jobs(db_path)
+
+    tours = _apply_fallback_scores(await get_jobs_by_category("tours", db_path))
+    paris = _apply_fallback_scores(await get_jobs_by_category("paris_hybrid", db_path))
+    remote = _apply_fallback_scores(await get_jobs_by_category("full_remote", db_path))
+
     stats = await get_stats(db_path)
+    total_db = stats.get("total", 0)
+
     now = datetime.now(timezone.utc)
-    html = build_html(jobs, stats, now)
+    html = build_html(tours, paris, remote, total_db, now)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "index.html"
     out.write_text(html, encoding="utf-8")
-    print(f"Static site generated: {out} ({len(jobs)} jobs)")
+    print(f"Static site generated: {out} ({len(tours)} tours, {len(paris)} paris, {len(remote)} remote)")
     return out
 
 

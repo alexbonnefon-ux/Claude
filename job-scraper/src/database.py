@@ -34,7 +34,7 @@ class Job:
 
 
 async def init_db(db_path: str = DB_PATH) -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, and add new columns for existing DBs."""
     async with aiosqlite.connect(db_path) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -56,9 +56,20 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 emailed BOOLEAN DEFAULT 0,
                 raw_data TEXT DEFAULT '{}',
                 description TEXT DEFAULT '',
+                category TEXT,
+                category_meta TEXT DEFAULT '{}',
                 UNIQUE(source, job_id)
             )
         """)
+        # Migrate existing DBs that don't have the new columns yet
+        for col_def in (
+            "ALTER TABLE jobs ADD COLUMN category TEXT",
+            "ALTER TABLE jobs ADD COLUMN category_meta TEXT DEFAULT '{}'",
+        ):
+            try:
+                await db.execute(col_def)
+            except Exception:
+                pass  # Column already exists
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_emailed ON jobs(emailed)
         """)
@@ -67,6 +78,9 @@ async def init_db(db_path: str = DB_PATH) -> None:
         """)
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_scraped_at ON jobs(scraped_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_category ON jobs(category)
         """)
         await db.commit()
         logger.debug("Database initialized at {}", db_path)
@@ -199,6 +213,53 @@ async def mark_as_sent(job_ids: List[int], db_path: str = DB_PATH) -> None:
         logger.debug("Marked {} jobs as sent", len(job_ids))
 
 
+async def update_job_category(
+    job_id: int,
+    category: str,
+    meta: dict,
+    db_path: str = DB_PATH,
+) -> None:
+    """Persist the category and category_meta for a job by its DB row ID."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE jobs SET category = ?, category_meta = ? WHERE id = ?",
+            (category, json.dumps(meta), job_id),
+        )
+        await db.commit()
+
+
+async def get_jobs_by_category(
+    category: str,
+    db_path: str = DB_PATH,
+    min_score: float = 0,
+) -> List[dict]:
+    """Return all jobs in a given category, ordered by score DESC then posted_date DESC."""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM jobs
+            WHERE category = ?
+              AND COALESCE(score, 0) >= ?
+            ORDER BY
+                COALESCE(score, 0) DESC,
+                posted_date DESC
+            """,
+            (category, min_score),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_all_jobs(db_path: str = DB_PATH) -> List[dict]:
+    """Return every job in the database as a list of dicts."""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM jobs ORDER BY scraped_at DESC")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def get_stats(db_path: str = DB_PATH) -> dict:
     """Return aggregate stats for logging/reporting."""
     async with aiosqlite.connect(db_path) as db:
@@ -207,11 +268,10 @@ async def get_stats(db_path: str = DB_PATH) -> dict:
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN emailed = 1 THEN 1 ELSE 0 END) as total_sent,
-                SUM(CASE WHEN score >= 8 THEN 1 ELSE 0 END) as top_picks,
-                SUM(CASE WHEN score >= 6 AND score < 8 THEN 1 ELSE 0 END) as good_matches,
-                SUM(CASE WHEN score >= 4 AND score < 6 THEN 1 ELSE 0 END) as worth_checking
+                SUM(CASE WHEN category = 'tours' THEN 1 ELSE 0 END) as tours_count,
+                SUM(CASE WHEN category = 'paris_hybrid' THEN 1 ELSE 0 END) as paris_count,
+                SUM(CASE WHEN category = 'full_remote' THEN 1 ELSE 0 END) as remote_count
             FROM jobs
-            WHERE score IS NOT NULL
         """)
         row = await cursor.fetchone()
         return dict(row) if row else {}

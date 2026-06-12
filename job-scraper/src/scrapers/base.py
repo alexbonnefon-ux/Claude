@@ -3,6 +3,7 @@ Abstract base class for all job scrapers.
 """
 import asyncio
 import random
+import re
 import hashlib
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -11,6 +12,32 @@ from loguru import logger
 
 from ..config import USER_AGENTS, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX, MAX_RETRIES, BACKOFF_FACTOR
 from ..database import Job
+
+
+# Patterns that indicate non-title content appended to the title string
+_TITLE_NOISE_PATTERNS = [
+    re.compile(
+        r'\s*[-–—]\s*(?:Full[- ]time|Part[- ]time|Contract|Freelance|Interim|CDI|CDD|Stage|Alternance)\s*.*$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\s*(?:Hybrid|Remote|On[- ]site|Onsite|Présentiel|Télétravail)\s*[-–—].*$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\s+(?:Hybrid|Remote|On[- ]site|Onsite)\s*$',
+        re.IGNORECASE,
+    ),
+    re.compile(r'\s+[A-Z][a-z]+,\s+[A-Z]{2,}$'),       # "City, STATE" at end
+    re.compile(r'\s+[A-Z][a-z]+,\s+[A-Z][a-z]+$'),     # "City, Country" at end
+]
+
+
+def clean_title(title: str) -> str:
+    """Strip appended location / contract-type noise from a job title."""
+    for pattern in _TITLE_NOISE_PATTERNS:
+        title = pattern.sub('', title).strip()
+    return title
 
 
 class BaseScraper(ABC):
@@ -109,7 +136,7 @@ class BaseScraper(ABC):
         return Job(
             source=self.name,
             job_id=job_id or self.make_job_id(url, title, company),
-            title=title.strip(),
+            title=clean_title(title.strip()),
             company=company.strip(),
             location=location.strip(),
             url=url.strip(),
